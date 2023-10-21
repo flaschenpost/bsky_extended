@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
+	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/fatih/color"
 
 	"github.com/urfave/cli/v2"
@@ -259,6 +261,70 @@ func doFollows(cCtx *cli.Context) error {
 	return nil
 }
 
+func blockFollowers(cCtx *cli.Context) error {
+	if cCtx.Args().Present() {
+		return cli.ShowSubcommandHelp(cCtx)
+	}
+
+	xrpcc, err := makeXRPCC(cCtx)
+	if err != nil {
+		return fmt.Errorf("cannot create client: %w", err)
+	}
+
+	arg := cCtx.String("handle")
+	if arg == "" {
+		arg = xrpcc.Auth.Handle
+	}
+	reader := bufio.NewReader(os.Stdin)
+
+	var cursor string
+	for {
+		followers, err := bsky.GraphGetFollowers(context.TODO(), xrpcc, arg, cursor, 100)
+		if err != nil {
+			return fmt.Errorf("getting record: %w", err)
+		}
+
+		if cCtx.Bool("json") {
+			for _, f := range followers.Followers {
+				json.NewEncoder(os.Stdout).Encode(f)
+			}
+		} else {
+			for _, f := range followers.Followers {
+				// clear buffer before showing choice
+				for reader.Buffered() > 0 {
+					reader.ReadRune()
+				}
+				color.Set(color.FgHiRed)
+				fmt.Print(f.Handle)
+				color.Set(color.Reset)
+				fmt.Printf(" [%s] ", stringp(f.DisplayName))
+				fmt.Printf(" %s ", "https://bsky.app/profile/"+f.Handle)
+				if f.Description != nil {
+					fmt.Printf(" %s ", *f.Description)
+				}
+				color.Set(color.FgBlue)
+				fmt.Println(f.Did)
+				color.Set(color.Reset)
+				fmt.Println("b=block, other=continue ?")
+				pKey, pErr := reader.ReadString('\n')
+				if pErr != nil {
+					fmt.Println(pErr)
+					continue
+				}
+				if strings.HasPrefix(pKey, "b") {
+					fmt.Println("try to block!" + f.Handle)
+					blockUser(xrpcc, f.Handle)
+				}
+			}
+		}
+		if followers.Cursor == nil {
+			break
+		}
+		cursor = *followers.Cursor
+	}
+	return nil
+}
+
 func doFollowers(cCtx *cli.Context) error {
 	if cCtx.Args().Present() {
 		return cli.ShowSubcommandHelp(cCtx)
@@ -304,6 +370,32 @@ func doFollowers(cCtx *cli.Context) error {
 	return nil
 }
 
+func blockUser(xrpcc *xrpc.Client, user string) error {
+	profile, err := bsky.ActorGetProfile(context.TODO(), xrpcc, user)
+	if err != nil {
+		return fmt.Errorf("cannot get profile: %w", err)
+	}
+
+	block := bsky.GraphBlock{
+		LexiconTypeID: "app.bsky.graph.block",
+		CreatedAt:     time.Now().Local().Format(time.RFC3339),
+		Subject:       profile.Did,
+	}
+
+	resp, err := comatproto.RepoCreateRecord(context.TODO(), xrpcc, &comatproto.RepoCreateRecord_Input{
+		Collection: "app.bsky.graph.block",
+		Repo:       xrpcc.Auth.Did,
+		Record: &lexutil.LexiconTypeDecoder{
+			Val: &block,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp.Uri)
+	return nil
+}
+
 func doBlock(cCtx *cli.Context) error {
 	if !cCtx.Args().Present() {
 		return cli.ShowSubcommandHelp(cCtx)
@@ -315,28 +407,10 @@ func doBlock(cCtx *cli.Context) error {
 	}
 
 	for _, arg := range cCtx.Args().Slice() {
-		profile, err := bsky.ActorGetProfile(context.TODO(), xrpcc, arg)
-		if err != nil {
-			return fmt.Errorf("cannot get profile: %w", err)
-		}
-
-		block := bsky.GraphBlock{
-			LexiconTypeID: "app.bsky.graph.block",
-			CreatedAt:     time.Now().Local().Format(time.RFC3339),
-			Subject:       profile.Did,
-		}
-
-		resp, err := comatproto.RepoCreateRecord(context.TODO(), xrpcc, &comatproto.RepoCreateRecord_Input{
-			Collection: "app.bsky.graph.block",
-			Repo:       xrpcc.Auth.Did,
-			Record: &lexutil.LexiconTypeDecoder{
-				Val: &block,
-			},
-		})
+		err = blockUser(xrpcc, arg)
 		if err != nil {
 			return err
 		}
-		fmt.Println(resp.Uri)
 	}
 	return nil
 }
@@ -425,8 +499,8 @@ func doLogin(cCtx *cli.Context) error {
 	var cfg config
 	cfg.Host = cCtx.String("host")
 	cfg.Handle = cCtx.Args().Get(0)
-	cfg.Password = cCtx.Args().Get(1)
-	if cfg.Handle == "" || cfg.Password == "" {
+	var password = cCtx.Args().Get(1)
+	if cfg.Handle == "" || password == "" {
 		cli.ShowSubcommandHelpAndExit(cCtx, 1)
 	}
 	b, err := json.MarshalIndent(&cfg, "", "  ")

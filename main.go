@@ -190,6 +190,18 @@ func main() {
 				Action:   doFollows,
 			},
 			{
+				Name:        "blockFollowers",
+				Description: "Show and choose to block followers",
+				Usage:       "Show and choose to block followers",
+				UsageText:   "bsky blockFollowers",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "handle", Aliases: []string{"H"}, Value: "", Usage: "user handle"},
+					&cli.BoolFlag{Name: "json", Usage: "output JSON"},
+				},
+				HelpName: "followers",
+				Action:   blockFollowers,
+			},
+			{
 				Name:        "followers",
 				Description: "Show followers",
 				Usage:       "Show followers",
